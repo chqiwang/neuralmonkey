@@ -199,8 +199,8 @@ class FlatMultiAttention(MultiAttention):
 
             self.masks_concat = tf.concat(self._encoders_masks, 1)
 
-    def initial_loop_state(self) -> List:
-        return []
+    def initial_loop_state(self) -> AttentionLoopState:
+        return empty_attention_loop_state()
 
     def get_encoder_projections(self, scope):
         encoder_projections = []
@@ -235,13 +235,12 @@ class FlatMultiAttention(MultiAttention):
             return encoder_projections
 
     # pylint: disable=too-many-locals
-    def attention(self, decoder_state, decoder_prev_state,
-                  decoder_input, _, step) -> Tuple[tf.Tensor, Any]:
-
-        # TODO here should be an attention_loop_state passed through this
-        # method, such that the history over particular encoders can be
-        # easily collected
-
+    def attention(self,
+                  decoder_state: tf.Tensor,
+                  decoder_prev_state: tf.Tensor,
+                  decoder_input: tf.Tensor,
+                  loop_state: AttentionLoopState,
+                  step: tf.Tensor) -> Tuple[tf.Tensor, AttentionLoopState]:
         with tf.variable_scope(self.scope):
             projected_state = linear(decoder_state, self.attention_state_size)
             projected_state = tf.expand_dims(projected_state, 1)
@@ -282,7 +281,11 @@ class FlatMultiAttention(MultiAttention):
             contexts = tf.reduce_sum(
                 tf.expand_dims(attentions, 2) * projections_concat, [1])
 
-            return contexts, []
+            next_loop_state = AttentionLoopState(
+                contexts=loop_state.contexts.write(step, contexts),
+                weights=loop_state.weights.write(step, attentions))
+
+            return contexts, next_loop_state
     # pylint: enable=too-many-locals
 
     def _tile_encoders_for_beamsearch(self, projected_sentinel):
@@ -307,8 +310,11 @@ class FlatMultiAttention(MultiAttention):
 
         return attentions
 
-    def finalize_loop(self, key: str, last_loop_state: Any) -> None:
-        pass
+    def finalize_loop(self, key: str,
+                      last_loop_state: AttentionLoopState) -> None:
+        # TODO factorization of the flat distribution across encoders
+        # could take place here.
+        self.histories[key] = last_loop_state.weights.stack()
 
 
 def _sentinel(state, prev_state, input_):
@@ -412,8 +418,9 @@ class HierarchicalMultiAttention(MultiAttention):
             context = tf.reduce_sum(
                 tf.expand_dims(attention_distr, 2) * projections_concat, [1])
 
-            next_contexts = loop_state.contexts.write(step, context)
-            next_weights = loop_state.weights.write(step, weights)
+            prev_loop_state = loop_state.loop_state
+            next_contexts = prev_loop_state.contexts.write(step, context)
+            next_weights = prev_loop_state.weights.write(step, attention_distr)
 
             next_loop_state = AttentionLoopState(
                 contexts=next_contexts,
@@ -427,4 +434,8 @@ class HierarchicalMultiAttention(MultiAttention):
     # pylint: enable=too-many-locals
 
     def finalize_loop(self, key: str, last_loop_state: Any) -> None:
-        pass
+        for c_attention, c_loop_state in zip(
+                self._attn_objs, last_loop_state.child_loop_states):
+            c_attention.finalize_loop(key, c_loop_state)
+
+        self.histories[key] = last_loop_state.loop_state.weights.stack()
