@@ -1,4 +1,4 @@
-from typing import NamedTuple, Tuple, List, Callable
+from typing import NamedTuple, List, Callable
 
 import tensorflow as tf
 from typeguard import check_argument_types
