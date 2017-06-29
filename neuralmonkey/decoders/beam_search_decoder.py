@@ -62,10 +62,6 @@ class BeamSearchDecoder(ModelPart):
         if self._max_steps is None:
             self._max_steps = parent_decoder.max_output_len
 
-        # TODO do something with this blessing
-        # print(self.parent_decoder.runtime_logits,
-        #  self.parent_decoder.train_logits)
-
         self.outputs = self._decoding_loop()
 
     @property
